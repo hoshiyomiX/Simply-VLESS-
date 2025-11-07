@@ -24,88 +24,55 @@ export default {
 };
 
 async function handleWebSocket(request, env) {
-  const url = new URL(request.url);
-  
-  // Create WebSocket pair
   const pair = new WebSocketPair();
   const [client, server] = Object.values(pair);
   
   // Accept the WebSocket connection
   server.accept();
   
-  // Define bug host
-  const bugHost = "cf-vod.nimo.tv";
+  // Connect to target server (you can change this)
+  const targetHost = "www.google.com";
+  const targetPort = 443;
   
-  // Create a fetch request handler for HTTP requests
-  const fetchHandler = async (request) => {
-    const newUrl = new URL(request.url);
-    newUrl.hostname = bugHost;
-    
-    const newRequest = new Request(newUrl, {
-      method: request.method,
-      headers: request.headers,
-      body: request.body,
-      redirect: 'manual'
-    });
-    
-    // Add or modify headers for bug host
-    newRequest.headers.set('Host', bugHost);
-    newRequest.headers.set('Origin', `https://${bugHost}`);
-    newRequest.headers.set('Referer', `https://${bugHost}/`);
-    
-    try {
-      const response = await fetch(newRequest);
-      
-      // Create a new response with modified headers
-      const newResponse = new Response(response.body, response);
-      
-      // Modify response headers if needed
-      newResponse.headers.set('Access-Control-Allow-Origin', '*');
-      newResponse.headers.delete('cf-ray');
-      
-      return newResponse;
-    } catch (error) {
-      console.error('Fetch error:', error);
-      return new Response('Error connecting to target', { status: 502 });
+  // Create WebSocket connection to target
+  const targetSocket = new WebSocket(`wss://${targetHost}:${targetPort}`, {
+    headers: {
+      'Host': targetHost,
     }
-  };
+  });
   
-  // Handle WebSocket messages by converting to HTTP requests
-  server.addEventListener('message', async (event) => {
-    try {
-      // Convert WebSocket message to HTTP request
-      const data = event.data;
-      
-      // Create a mock request from the WebSocket data
-      const mockRequest = new Request(`https://${bugHost}/`, {
-        method: 'GET',
-        headers: {
-          'Host': bugHost,
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Accept': '*/*',
-        }
-      });
-      
-      // Forward the request
-      const response = await fetchHandler(mockRequest);
-      
-      // Send response back through WebSocket
-      if (server.readyState === WebSocket.OPEN) {
-        server.send(await response.text());
-      }
-    } catch (error) {
-      console.error('Error handling WebSocket message:', error);
+  // Handle client to target
+  server.addEventListener('message', (event) => {
+    if (targetSocket.readyState === WebSocket.OPEN) {
+      targetSocket.send(event.data);
+    }
+  });
+  
+  // Handle target to client
+  targetSocket.addEventListener('message', (event) => {
+    if (server.readyState === WebSocket.OPEN) {
+      server.send(event.data);
     }
   });
   
   // Handle close events
   server.addEventListener('close', () => {
-    console.log('WebSocket closed');
+    targetSocket.close();
+  });
+  
+  targetSocket.addEventListener('close', () => {
+    server.close();
   });
   
   // Handle errors
   server.addEventListener('error', (error) => {
-    console.error('WebSocket error:', error);
+    console.error('Client WebSocket error:', error);
+    targetSocket.close();
+  });
+  
+  targetSocket.addEventListener('error', (error) => {
+    console.error('Target WebSocket error:', error);
+    server.close();
   });
   
   return new Response(null, {
@@ -117,7 +84,7 @@ async function handleWebSocket(request, env) {
 function getConfigInfo(request, env) {
   const url = new URL(request.url);
   const host = url.hostname;
-  const uuid = env.UUID || "9d166b44-f286-4906-8fac-5a6a7b8c6f66";
+  const uuid = env.UUID || crypto.randomUUID();
   
   const vlessConfig = `vless://${uuid}@${host}:443?encryption=none&security=tls&type=ws&host=${host}&path=%2F#VLESS-WS-Worker`;
   
@@ -137,14 +104,11 @@ Configuration Details:
 - Type: WebSocket
 - Path: /
 
-Bug Host: cf-vod.nimo.tv
-
 Client Setup:
 1. Copy the configuration URL above
 2. Import it into your V2Ray client (v2rayN, Clash, etc.)
-3. Make sure to set the Host header to cf-vod.nimo.tv in your client
-4. Connect and enjoy!
+3. Connect and enjoy!
 
-Note: This worker is configured for use with cf-vod.nimo.tv bug host.
+Note: Make sure to set your UUID in the worker environment variables for better security.
 `;
 }
