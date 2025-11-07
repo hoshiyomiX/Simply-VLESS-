@@ -18,61 +18,54 @@ export default {
       // Default response
       return new Response('VLESS WebSocket Worker', { status: 200 });
     } catch (err) {
-      return new Response(err.stack, { status: 500 });
+      console.error('Worker error:', err);
+      return new Response(`Error: ${err.message}`, { status: 500 });
     }
   }
 };
 
 async function handleWebSocket(request, env) {
+  const url = new URL(request.url);
+  const uuid = env.UUID || "9d166b44-f286-4906-8fac-5a6a7b8c6f66";
+  
+  // Create WebSocket pair
   const pair = new WebSocketPair();
   const [client, server] = Object.values(pair);
   
   // Accept the WebSocket connection
   server.accept();
   
-  // Connect to target server (you can change this)
-  const targetHost = "www.google.com";
-  const targetPort = 443;
-  
-  // Create WebSocket connection to target
-  const targetSocket = new WebSocket(`wss://${targetHost}:${targetPort}`, {
-    headers: {
-      'Host': targetHost,
-    }
-  });
-  
-  // Handle client to target
-  server.addEventListener('message', (event) => {
-    if (targetSocket.readyState === WebSocket.OPEN) {
-      targetSocket.send(event.data);
-    }
-  });
-  
-  // Handle target to client
-  targetSocket.addEventListener('message', (event) => {
-    if (server.readyState === WebSocket.OPEN) {
-      server.send(event.data);
+  // Simple echo/proxy implementation
+  server.addEventListener('message', async (event) => {
+    try {
+      // For now, just echo back or process data
+      // You can modify this to forward to actual target
+      const response = await fetch('https://cf-vod.nimo.tv', {
+        method: 'GET',
+        headers: {
+          'Host': 'cf-vod.nimo.tv',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+      });
+      
+      if (response.ok) {
+        server.send(`Connected to target: ${response.status}`);
+      } else {
+        server.send(`Target error: ${response.status}`);
+      }
+    } catch (error) {
+      console.error('Proxy error:', error);
+      server.send(`Error: ${error.message}`);
     }
   });
   
   // Handle close events
   server.addEventListener('close', () => {
-    targetSocket.close();
+    console.log('WebSocket closed');
   });
   
-  targetSocket.addEventListener('close', () => {
-    server.close();
-  });
-  
-  // Handle errors
   server.addEventListener('error', (error) => {
-    console.error('Client WebSocket error:', error);
-    targetSocket.close();
-  });
-  
-  targetSocket.addEventListener('error', (error) => {
-    console.error('Target WebSocket error:', error);
-    server.close();
+    console.error('WebSocket error:', error);
   });
   
   return new Response(null, {
@@ -84,7 +77,7 @@ async function handleWebSocket(request, env) {
 function getConfigInfo(request, env) {
   const url = new URL(request.url);
   const host = url.hostname;
-  const uuid = env.UUID || crypto.randomUUID();
+  const uuid = env.UUID || "9d166b44-f286-4906-8fac-5a6a7b8c6f66";
   
   const vlessConfig = `vless://${uuid}@${host}:443?encryption=none&security=tls&type=ws&host=${host}&path=%2F#VLESS-WS-Worker`;
   
@@ -104,11 +97,13 @@ Configuration Details:
 - Type: WebSocket
 - Path: /
 
+Bug Host: cf-vod.nimo.tv
+
 Client Setup:
 1. Copy the configuration URL above
-2. Import it into your V2Ray client (v2rayN, Clash, etc.)
+2. Import it into your V2Ray client
 3. Connect and enjoy!
 
-Note: Make sure to set your UUID in the worker environment variables for better security.
+Status: Worker is running (Simplified Mode)
 `;
 }
