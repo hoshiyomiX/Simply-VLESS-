@@ -25,7 +25,6 @@ export default {
 
 async function handleWebSocket(request, env) {
   const url = new URL(request.url);
-  const clientUUID = env.UUID || "9d166b44-f286-4906-8fac-5a6a7b8c6f66";
   
   // Create WebSocket pair
   const pair = new WebSocketPair();
@@ -34,179 +33,85 @@ async function handleWebSocket(request, env) {
   // Accept the WebSocket connection
   server.accept();
   
-  // Buffer for incoming data
-  let buffer = new Uint8Array();
-  let authenticated = false;
-  let targetSocket = null;
+  // Define bug host
+  const bugHost = "cf-vod.nimo.tv";
   
-  // Handle incoming messages
+  // Create a fetch request handler for HTTP requests
+  const fetchHandler = async (request) => {
+    const newUrl = new URL(request.url);
+    newUrl.hostname = bugHost;
+    
+    const newRequest = new Request(newUrl, {
+      method: request.method,
+      headers: request.headers,
+      body: request.body,
+      redirect: 'manual'
+    });
+    
+    // Add or modify headers for bug host
+    newRequest.headers.set('Host', bugHost);
+    newRequest.headers.set('Origin', `https://${bugHost}`);
+    newRequest.headers.set('Referer', `https://${bugHost}/`);
+    
+    try {
+      const response = await fetch(newRequest);
+      
+      // Create a new response with modified headers
+      const newResponse = new Response(response.body, response);
+      
+      // Modify response headers if needed
+      newResponse.headers.set('Access-Control-Allow-Origin', '*');
+      newResponse.headers.delete('cf-ray');
+      
+      return newResponse;
+    } catch (error) {
+      console.error('Fetch error:', error);
+      return new Response('Error connecting to target', { status: 502 });
+    }
+  };
+  
+  // Handle WebSocket messages by converting to HTTP requests
   server.addEventListener('message', async (event) => {
     try {
-      // Convert data to Uint8Array if it's not already
-      const data = event.data instanceof Uint8Array 
-        ? event.data 
-        : new TextEncoder().encode(event.data);
+      // Convert WebSocket message to HTTP request
+      const data = event.data;
       
-      // Append to buffer
-      buffer = new Uint8Array([...buffer, ...data]);
+      // Create a mock request from the WebSocket data
+      const mockRequest = new Request(`https://${bugHost}/`, {
+        method: 'GET',
+        headers: {
+          'Host': bugHost,
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Accept': '*/*',
+        }
+      });
       
-      // If not authenticated yet, try to authenticate
-      if (!authenticated) {
-        if (buffer.length < 19) return; // Not enough data for VLESS header
-        
-        // Check VLESS protocol version (should be 0)
-        if (buffer[0] !== 0) {
-          server.close();
-          return;
-        }
-        
-        // Extract UUID (16 bytes)
-        const uuid = Array.from(buffer.slice(1, 17))
-          .map(b => b.toString(16).padStart(2, '0'))
-          .join('');
-        
-        // Check if UUID matches
-        if (uuid !== clientUUID.replace(/-/g, '')) {
-          server.close();
-          return;
-        }
-        
-        // Extract protocol version (1 byte)
-        const version = buffer[17];
-        
-        // Extract command (1 byte)
-        const command = buffer[18];
-        
-        // Only support TCP (command = 1)
-        if (command !== 1) {
-          server.close();
-          return;
-        }
-        
-        // Extract address type (1 byte)
-        if (buffer.length < 20) return; // Not enough data for address type
-        
-        const addressType = buffer[19];
-        let address, addressLength, port;
-        
-        // Parse address based on type
-        if (addressType === 1) { // IPv4
-          if (buffer.length < 24) return; // Not enough data for IPv4
-          address = Array.from(buffer.slice(20, 24)).join('.');
-          addressLength = 4;
-        } else if (addressType === 2) { // Domain
-          if (buffer.length < 21) return; // Not enough data for domain length
-          const domainLength = buffer[20];
-          if (buffer.length < 21 + domainLength) return; // Not enough data for domain
-          address = new TextDecoder().decode(buffer.slice(21, 21 + domainLength));
-          addressLength = 1 + domainLength;
-        } else if (addressType === 3) { // IPv6
-          if (buffer.length < 36) return; // Not enough data for IPv6
-          const ipv6Parts = [];
-          for (let i = 0; i < 8; i++) {
-            const part = buffer.slice(20 + i * 2, 22 + i * 2);
-            ipv6Parts.push(Array.from(part).map(b => b.toString(16).padStart(2, '0')).join(''));
-          }
-          address = ipv6Parts.join(':');
-          addressLength = 16;
-        } else {
-          server.close();
-          return;
-        }
-        
-        // Extract port (2 bytes)
-        if (buffer.length < 20 + addressLength + 2) return; // Not enough data for port
-        port = (buffer[20 + addressLength] << 8) | buffer[21 + addressLength];
-        
-        // We're authenticated now
-        authenticated = true;
-        
-        // Connect to target
-        try {
-          targetSocket = await connectToTarget(address, port);
-          
-          // Send any remaining data in buffer to target
-          if (buffer.length > 20 + addressLength + 2) {
-            const remainingData = buffer.slice(20 + addressLength + 2);
-            await targetSocket.write(remainingData);
-          }
-          
-          // Clear buffer
-          buffer = new Uint8Array();
-          
-          // Handle data from target to client
-          targetSocket.readable.pipeTo(
-            new WritableStream({
-              write(chunk) {
-                if (server.readyState === WebSocket.OPEN) {
-                  server.send(chunk);
-                }
-              }
-            })
-          );
-          
-          // Handle target socket close
-          targetSocket.closed.then(() => {
-            if (server.readyState === WebSocket.OPEN) {
-              server.close();
-            }
-          }).catch(() => {
-            if (server.readyState === WebSocket.OPEN) {
-              server.close();
-            }
-          });
-          
-        } catch (error) {
-          console.error('Failed to connect to target:', error);
-          server.close();
-        }
-      } else {
-        // Forward data to target
-        if (targetSocket && targetSocket.writable) {
-          await targetSocket.write(buffer);
-          buffer = new Uint8Array();
-        }
+      // Forward the request
+      const response = await fetchHandler(mockRequest);
+      
+      // Send response back through WebSocket
+      if (server.readyState === WebSocket.OPEN) {
+        server.send(await response.text());
       }
     } catch (error) {
-      console.error('Error handling message:', error);
-      server.close();
+      console.error('Error handling WebSocket message:', error);
     }
   });
   
-  // Handle client close
+  // Handle close events
   server.addEventListener('close', () => {
-    if (targetSocket) {
-      targetSocket.close();
-    }
+    console.log('WebSocket closed');
   });
   
-  // Handle client error
+  // Handle errors
   server.addEventListener('error', (error) => {
-    console.error('Client WebSocket error:', error);
-    if (targetSocket) {
-      targetSocket.close();
-    }
+    console.error('WebSocket error:', error);
   });
   
   return new Response(null, {
     status: 101,
     webSocket: client,
   });
-}
-
-async function connectToTarget(address, port) {
-  try {
-    // Connect to the target server
-    const socket = connect({
-      hostname: address,
-      port: port
-    });
-    
-    return socket;
-  } catch (error) {
-    console.error('Failed to connect to target:', error);
-    throw error;
-  }
 }
 
 function getConfigInfo(request, env) {
@@ -232,11 +137,14 @@ Configuration Details:
 - Type: WebSocket
 - Path: /
 
+Bug Host: cf-vod.nimo.tv
+
 Client Setup:
 1. Copy the configuration URL above
 2. Import it into your V2Ray client (v2rayN, Clash, etc.)
-3. Connect and enjoy!
+3. Make sure to set the Host header to cf-vod.nimo.tv in your client
+4. Connect and enjoy!
 
-Note: Make sure to set your UUID in the worker environment variables for better security.
+Note: This worker is configured for use with cf-vod.nimo.tv bug host.
 `;
 }
